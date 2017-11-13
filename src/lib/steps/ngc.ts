@@ -1,49 +1,139 @@
 import * as path from 'path';
-import { performCompilation, readConfiguration, AngularCompilerOptions } from '@angular/compiler-cli';
+import * as ng from '@angular/compiler-cli';
+import * as ts from 'typescript';
 import { NgPackageData } from '../model/ng-package-data';
-import { readJson, writeJson } from 'fs-extra';
-import { debug } from '../util/log';
+import * as log from '../util/log';
+import { componentTransformer } from './ts-transformers';
 
+/** TypeScript configuration used internally (marker typer). */
+type TsConfig = ng.ParsedConfiguration;
 
-async function prepareTsConfig(ngPkg: NgPackageData, outFile: string): Promise<void> {
-  const tsConfigPath: string = path.resolve(__dirname, '..', 'conf', 'tsconfig.ngc.json');
-  debug('prepareTsConfig: Resolved tsconfig path to ' + tsConfigPath);
+/** Prepares TypeScript Compiler and Angular Compiler option. */
+const prepareTsConfig =
+  (ngPkg: NgPackageData, basePath: string): TsConfig => {
 
-  const tsConfig: any = await readJson(tsConfigPath);
+    // Read the default configuration and overwrite package-specific options
+    const tsConfig = ng.readConfiguration(path.resolve(__dirname, '..', 'conf', 'tsconfig.ngc.json'));
+    tsConfig.rootNames = [ path.resolve(basePath, ngPkg.entryFile) ];
+    tsConfig.options.flatModuleId = ngPkg.fullPackageName
+    tsConfig.options.flatModuleOutFile = `${ngPkg.flatModuleFileName}.js`;
+    tsConfig.options.basePath = basePath;
+    tsConfig.options.baseUrl = basePath;
+    tsConfig.options.outDir = path.resolve(basePath, '.ng_pkg_build');
+    tsConfig.options.genDir = path.resolve(basePath, '.ng_pkg_build');
 
-  const compilerOptions: AngularCompilerOptions = tsConfig.angularCompilerOptions;
-  compilerOptions.flatModuleId = ngPkg.fullPackageName;
-  compilerOptions.flatModuleOutFile = `${ngPkg.flatModuleFileName}.js`;
-
-  tsConfig['files'] = [ ngPkg.entryFile ];
-
-  if (ngPkg.jsxConfig) {
-    debug('prepareTsConfig: Applying jsx flag to tsconfig ' + ngPkg.jsxConfig);
-    tsConfig['compilerOptions']['jsx'] = ngPkg.jsxConfig;
+    return tsConfig;
   }
 
-  await writeJson(outFile, tsConfig);
-}
+/** Inlines templateUrl and styleUrls from `@Component({..})` decorators. */
+const transformTemplatesAndStyles =
+  (tsConfig: TsConfig): ts.TransformationResult<ts.SourceFile> => {
+    const compilerHost: ng.CompilerHost = ng.createCompilerHost({
+      options: tsConfig.options
+    });
+    const program: ng.Program = ng.createProgram({
+      rootNames: [ ...tsConfig.rootNames ],
+      options: tsConfig.options,
+      host: compilerHost
+    });
 
+    // transform typescript AST prior to compilation
+    const transformationResult: ts.TransformationResult<ts.SourceFile> = ts.transform(
+      program.getTsProgram().getSourceFiles(),
+      [ componentTransformer ],
+      tsConfig.options
+    );
+
+    return transformationResult;
+  }
+
+const compilerHostFromTransformation =
+  ({transformation, options}: {transformation: ts.TransformationResult<ts.SourceFile>, options: ts.CompilerOptions}): ts.CompilerHost => {
+    const wrapped = ts.createCompilerHost(options);
+
+    return {
+      ...wrapped,
+      getSourceFile: (fileName, version) => {
+        const inTransformation = transformation.transformed.find((file) => file.fileName === fileName);
+
+        if (inTransformation) {
+          // FIX see https://github.com/Microsoft/TypeScript/issues/19950
+          if (!inTransformation['ambientModuleNames']) {
+            inTransformation['ambientModuleNames'] = inTransformation['original']['ambientModuleNames'];
+          }
+
+          return inTransformation;
+        } else {
+          return wrapped.getSourceFile(fileName, version);
+        }
+      },
+      getSourceFileByPath: (fileName, path, languageVersion) => {
+        console.warn("getSourceFileByPath");
+
+        return wrapped.getSourceFileByPath(fileName, path, languageVersion);
+      }
+    };
+  }
 
 /**
  * Compiles typescript sources with 'ngc'.
  *
  * @param ngPkg Angular package data
  * @param basePath
+ * @returns Promise<string> Path of the flatModuleOutFile
  */
 export async function ngc(ngPkg: NgPackageData, basePath: string): Promise<string> {
-  const tsConfigPath: string = `${basePath}/tsconfig.lib.json`;
-  debug(`ngc ${tsConfigPath}, { basePath: ${basePath} })`);
+  log.debug(`ngc (v${ng.VERSION.full}): ${ngPkg.entryFile}`);
 
-  await prepareTsConfig(ngPkg, tsConfigPath);
+  const tsConfig = prepareTsConfig(ngPkg, basePath);
+  const transformedSources = transformTemplatesAndStyles(tsConfig);
 
-  // invoke ngc programmatic API
-  const compilerConfig = readConfiguration(tsConfigPath);
-  performCompilation(compilerConfig);
+  // ng.CompilerHost
+  const ngCompilerHost = ng.createCompilerHost({
+    options: tsConfig.options,
+    tsHost: compilerHostFromTransformation({
+      options: tsConfig.options,
+      transformation: transformedSources
+    })
+  });
 
-  debug('Reading tsconfig from ' + tsConfigPath);
-  const tsConfig = await readJson(tsConfigPath);
+  // ng.Program
+  const ngProgram = ng.createProgram({
+    rootNames: [ ...tsConfig.rootNames ],
+    options: tsConfig.options,
+    host: ngCompilerHost
+  });
 
-  return `${basePath}/${tsConfig.compilerOptions.outDir}/${tsConfig.angularCompilerOptions.flatModuleOutFile}`;
+  // ngc
+  const result = ng.performCompilation({
+    rootNames: [ ...tsConfig.rootNames ],
+    options: tsConfig.options,
+    emitFlags: tsConfig.emitFlags,
+    host: ngCompilerHost,
+    oldProgram: ngProgram
+  });
+  console.log(result);
+
+
+  /*
+  // --> XX: start custom transformer
+  // Hook into TypeScript transformation API
+  const customTransformers: ng.CustomTransformers = {
+    beforeTs: [ componentTransformer ]
+  };
+
+  // Invoke ngc programmatic API
+  const result = ng.performCompilation({
+    options: tsConfig.options,
+    rootNames: tsConfig.rootNames,
+    emitFlags: tsConfig.emitFlags,
+    customTransformers
+  });
+  console.log(result);
+  // <-- XX end custom transformers
+  */
+
+  return Promise.resolve(
+    path.resolve(basePath, tsConfig.options.outDir, tsConfig.options.flatModuleOutFile)
+  );
 }

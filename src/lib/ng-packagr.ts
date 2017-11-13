@@ -51,8 +51,10 @@ export async function createNgPackage(opts: NgPackagrCliArguments): Promise<void
     log.error(error);
     throw error;
   } finally {
+    /*
     if (buildDirectoryRoot) {
       await rimraf(buildDirectoryRoot);
     }
+    */
   }
 }

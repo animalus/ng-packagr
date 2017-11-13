@@ -29,12 +29,17 @@ export async function generateNgBundle(ngPkg: NgPackageData): Promise<void> {
   await rimraf(ngPkg.buildDirectory);
 
   // 1. ASSETS
-  log.info('Processing assets');
-  await processAssets(ngPkg.sourcePath, baseBuildPath);
+  // log.info('Processing assets');
+  // await processAssets(ngPkg.sourcePath, baseBuildPath);
 
   // 2. NGC
   log.info('Running ngc');
-  const es2015EntryFile: string = await ngc(ngPkg, baseBuildPath);
+  const es2015EntryFile: string = await ngc(ngPkg, ngPkg.sourcePath);
+  // FOO ... break here!
+  if (1 === 1) {
+    return;
+  }
+
   // XX: see #46 - ngc only references to closure-annotated ES6 sources
   await remapSourceMap(`${baseBuildPath}/${ngPkg.flatModuleFileName}.js`);
 
