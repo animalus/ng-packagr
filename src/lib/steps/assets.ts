@@ -1,10 +1,6 @@
-import * as vfs from 'vinyl-fs';
 import * as path from 'path';
 import { debug, warn } from '../util/log';
 import { readFile } from 'fs-extra';
-
-// Angular Inliner for Templates and Stylesheets
-import * as inlineNg2Template from 'gulp-inline-ng2-template';
 
 // CSS Tools
 import * as autoprefixer from 'autoprefixer';
@@ -14,61 +10,44 @@ import * as sass from 'node-sass';
 import * as less from 'less';
 import * as stylus from 'stylus';
 
+/**
+ * Process a component's template.
+ *
+ * @param componentFile Path of the TypeScript source file, e.g. `/my/foo.component.ts`
+ * @param templateUrl Relative path of the `templateUrl` property, e.g. `./foo.component.html`
+ * @return Resolved content of HTML template file (e.g. from `/my/foo.component.html`)
+ */
+const processTemplate =
+  (componentFile: string, templateUrl: string): Promise<string> =>
+    readFile(path.resolve(path.dirname(componentFile), templateUrl))
+      .then((buffer) => buffer.toString());
 
 /**
- * Process Angular components assets (HTML and Stylesheets).
- *
- * Inlines 'templateUrl' and 'styleUrl', compiles .scss to .css, and write .ts files to
- * destination directory.
  *
  * @param src Source folder
- * @param dest Destination folder
+ * @param path Path of ... what?!?
+ * @param ext
+ * @param file
  */
-export const processAssets = (src: string, dest: string): Promise<any> => {
+const processStyles = async (src: string, path, ext, file): Promise<string> => {
 
-  return new Promise((resolve, reject) => {
-    debug(`processAssets ${src} to ${dest}`);
+  try {
+    debug(`render stylesheet ${path}`);
+    const css: string = await pickRenderer(path, file, src);
 
-    vfs.src([`${src}/**/*.ts`, `${src}/**/*.tsx`, `${src}/**/*.jsx`, '!node_modules/**/*', '!${dest}/**/*'])
-      .pipe(inlineNg2Template({
-        base: `${src}`,
-        useRelativePaths: true,
-        styleProcessor: async (path, ext, file, cb) => {
+    debug(`postcss with autoprefixer for ${path}`);
+    const browsers = browserslist(undefined, { path });
+    const result: postcss.Result = await postcss([ autoprefixer({ browsers }) ])
+      .process(css, { from: path, to: path.replace(ext, '.css') });
+    // Log warnings from postcss
+    result.warnings().forEach((msg) => {
+      warn(msg.toString());
+    });
 
-          debug(`render stylesheet ${path}`);
-          const renderPickTask: Promise<string> = pickRenderer(path, file, src);
-
-          debug(`postcss with autoprefixer for ${path}`);
-          const browsers = browserslist(undefined, { path });
-
-          try {
-            const css: string = await renderPickTask;
-            const result: postcss.Result = await postcss([ autoprefixer({ browsers }) ])
-              .process(css, { from: path, to: path.replace(ext, '.css') });
-            result.warnings().forEach((msg) => {
-              warn(msg.toString());
-            });
-
-            cb(undefined, result.css);
-          } catch (err) {
-            cb(err || new Error(`Cannot inline stylesheet ${path}`));
-          }
-        }
-      }))
-      .on('error', reject)
-      .pipe(vfs.dest(`${dest}`))
-      .on('end', resolve);
-  });
-
-}
-
-
-const sassImporter = (url: string): any => {
-  if (url[0] === '~') {
-    url = path.resolve('node_modules', url.substr(1));
+    return Promise.resolve(result.css);
+  } catch (err) {
+    return Promise.reject(new Error(`Cannot inline stylesheet ${path}`));
   }
-
-  return { file: url };
 }
 
 
@@ -100,6 +79,13 @@ async function pickRenderer(
 
 }
 
+const sassImporter = (url: string): any => {
+  if (url[0] === '~') {
+    url = path.resolve('node_modules', url.substr(1));
+  }
+
+  return { file: url };
+}
 
 const renderSass = (sassOpts: any): Promise<string> => {
 

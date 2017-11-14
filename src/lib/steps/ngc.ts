@@ -112,26 +112,6 @@ export async function ngc(ngPkg: NgPackageData, basePath: string): Promise<strin
     host: ngCompilerHost,
     oldProgram: ngProgram
   });
-  console.log(result);
-
-
-  /*
-  // --> XX: start custom transformer
-  // Hook into TypeScript transformation API
-  const customTransformers: ng.CustomTransformers = {
-    beforeTs: [ componentTransformer ]
-  };
-
-  // Invoke ngc programmatic API
-  const result = ng.performCompilation({
-    options: tsConfig.options,
-    rootNames: tsConfig.rootNames,
-    emitFlags: tsConfig.emitFlags,
-    customTransformers
-  });
-  console.log(result);
-  // <-- XX end custom transformers
-  */
 
   return Promise.resolve(
     path.resolve(basePath, tsConfig.options.outDir, tsConfig.options.flatModuleOutFile)
